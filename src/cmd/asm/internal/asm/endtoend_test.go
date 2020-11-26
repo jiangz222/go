@@ -31,7 +31,7 @@ func testEndToEnd(t *testing.T, goarch, file string) {
 	architecture, ctxt := setArch(goarch)
 	architecture.Init(ctxt)
 	lexer := lex.NewLexer(input)
-	parser := NewParser(ctxt, architecture, lexer)
+	parser := NewParser(ctxt, architecture, lexer, false)
 	pList := new(obj.Plist)
 	var ok bool
 	testOut = new(bytes.Buffer) // The assembler writes test output to this buffer.
@@ -257,11 +257,11 @@ func isHexes(s string) bool {
 	return true
 }
 
-// It would be nice if the error messages began with
+// It would be nice if the error messages always began with
 // the standard file:line: prefix,
 // but that's not where we are today.
 // It might be at the beginning but it might be in the middle of the printed instruction.
-var fileLineRE = regexp.MustCompile(`(?:^|\()(testdata[/\\][0-9a-z]+\.s:[0-9]+)(?:$|\))`)
+var fileLineRE = regexp.MustCompile(`(?:^|\()(testdata[/\\][0-9a-z]+\.s:[0-9]+)(?:$|\)|:)`)
 
 // Same as in test/run.go
 var (
@@ -273,7 +273,7 @@ func testErrors(t *testing.T, goarch, file string) {
 	input := filepath.Join("testdata", file+".s")
 	architecture, ctxt := setArch(goarch)
 	lexer := lex.NewLexer(input)
-	parser := NewParser(ctxt, architecture, lexer)
+	parser := NewParser(ctxt, architecture, lexer, false)
 	pList := new(obj.Plist)
 	var ok bool
 	testOut = new(bytes.Buffer) // The assembler writes test output to this buffer.
@@ -281,6 +281,7 @@ func testErrors(t *testing.T, goarch, file string) {
 	defer ctxt.Bso.Flush()
 	failed := false
 	var errBuf bytes.Buffer
+	parser.errorWriter = &errBuf
 	ctxt.DiagFunc = func(format string, args ...interface{}) {
 		failed = true
 		s := fmt.Sprintf(format, args...)
@@ -292,7 +293,7 @@ func testErrors(t *testing.T, goarch, file string) {
 	pList.Firstpc, ok = parser.Parse()
 	obj.Flushplist(ctxt, pList, nil, "")
 	if ok && !failed {
-		t.Errorf("asm: %s had no errors", goarch)
+		t.Errorf("asm: %s had no errors", file)
 	}
 
 	errors := map[string]string{}
@@ -353,12 +354,7 @@ func testErrors(t *testing.T, goarch, file string) {
 }
 
 func Test386EndToEnd(t *testing.T) {
-	defer func(old string) { objabi.GO386 = old }(objabi.GO386)
-	for _, go386 := range []string{"387", "sse2"} {
-		t.Logf("GO386=%v", go386)
-		objabi.GO386 = go386
-		testEndToEnd(t, "386", "386")
-	}
+	testEndToEnd(t, "386", "386")
 }
 
 func TestARMEndToEnd(t *testing.T) {
@@ -373,6 +369,10 @@ func TestARMEndToEnd(t *testing.T) {
 	}
 }
 
+func TestGoBuildErrors(t *testing.T) {
+	testErrors(t, "amd64", "buildtagerror")
+}
+
 func TestARMErrors(t *testing.T) {
 	testErrors(t, "arm", "armerror")
 }
@@ -385,13 +385,43 @@ func TestARM64Encoder(t *testing.T) {
 	testEndToEnd(t, "arm64", "arm64enc")
 }
 
+func TestARM64Errors(t *testing.T) {
+	testErrors(t, "arm64", "arm64error")
+}
+
 func TestAMD64EndToEnd(t *testing.T) {
 	testEndToEnd(t, "amd64", "amd64")
 }
 
+func Test386Encoder(t *testing.T) {
+	testEndToEnd(t, "386", "386enc")
+}
+
 func TestAMD64Encoder(t *testing.T) {
-	testEndToEnd(t, "amd64", "amd64enc")
-	testEndToEnd(t, "amd64", "amd64enc_extra")
+	filenames := [...]string{
+		"amd64enc",
+		"amd64enc_extra",
+		"avx512enc/aes_avx512f",
+		"avx512enc/gfni_avx512f",
+		"avx512enc/vpclmulqdq_avx512f",
+		"avx512enc/avx512bw",
+		"avx512enc/avx512cd",
+		"avx512enc/avx512dq",
+		"avx512enc/avx512er",
+		"avx512enc/avx512f",
+		"avx512enc/avx512pf",
+		"avx512enc/avx512_4fmaps",
+		"avx512enc/avx512_4vnniw",
+		"avx512enc/avx512_bitalg",
+		"avx512enc/avx512_ifma",
+		"avx512enc/avx512_vbmi",
+		"avx512enc/avx512_vbmi2",
+		"avx512enc/avx512_vnni",
+		"avx512enc/avx512_vpopcntdq",
+	}
+	for _, name := range filenames {
+		testEndToEnd(t, "amd64", name)
+	}
 }
 
 func TestAMD64Errors(t *testing.T) {
@@ -405,6 +435,10 @@ func TestMIPSEndToEnd(t *testing.T) {
 
 func TestPPC64EndToEnd(t *testing.T) {
 	testEndToEnd(t, "ppc64", "ppc64")
+}
+
+func TestRISCVEncoder(t *testing.T) {
+	testEndToEnd(t, "riscv64", "riscvenc")
 }
 
 func TestS390XEndToEnd(t *testing.T) {

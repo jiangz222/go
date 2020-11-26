@@ -29,15 +29,6 @@ type SockaddrDatalink struct {
 	raw    RawSockaddrDatalink
 }
 
-func clen(n []byte) int {
-	for i := 0; i < len(n); i++ {
-		if n[i] == 0 {
-			return i
-		}
-	}
-	return len(n)
-}
-
 func direntIno(buf []byte) (uint64, bool) {
 	return readInt(buf, unsafe.Offsetof(Dirent{}.Ino), unsafe.Sizeof(Dirent{}.Ino))
 }
@@ -302,7 +293,7 @@ func anyToSockaddr(rsa *RawSockaddrAny) (Sockaddr, error) {
 		for n < len(pp.Path) && pp.Path[n] != 0 {
 			n++
 		}
-		bytes := (*[10000]byte)(unsafe.Pointer(&pp.Path[0]))[0:n]
+		bytes := (*[len(pp.Path)]byte)(unsafe.Pointer(&pp.Path[0]))[0:n]
 		sa.Name = string(bytes)
 		return sa, nil
 

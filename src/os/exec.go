@@ -5,6 +5,7 @@
 package os
 
 import (
+	"errors"
 	"internal/testlog"
 	"runtime"
 	"sync"
@@ -12,6 +13,9 @@ import (
 	"syscall"
 	"time"
 )
+
+// ErrProcessDone indicates a Process has finished.
+var ErrProcessDone = errors.New("os: process already finished")
 
 // Process stores the information about a process created by StartProcess.
 type Process struct {
@@ -88,6 +92,11 @@ func FindProcess(pid int) (*Process, error) {
 // specified by name, argv and attr. The argv slice will become os.Args in the
 // new process, so it normally starts with the program name.
 //
+// If the calling goroutine has locked the operating system thread
+// with runtime.LockOSThread and modified any inheritable OS-level
+// thread state (for example, Linux or Plan 9 name spaces), the new
+// process will inherit the caller's thread state.
+//
 // StartProcess is a low-level interface. The os/exec package provides
 // higher-level interfaces.
 //
@@ -104,7 +113,9 @@ func (p *Process) Release() error {
 	return p.release()
 }
 
-// Kill causes the Process to exit immediately.
+// Kill causes the Process to exit immediately. Kill does not wait until
+// the Process has actually exited. This only kills the Process itself,
+// not any other processes it may have started.
 func (p *Process) Kill() error {
 	return p.kill()
 }

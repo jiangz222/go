@@ -127,7 +127,7 @@ func (b *builder) addLegend() {
 	}
 	title := labels[0]
 	fmt.Fprintf(b, `subgraph cluster_L { "%s" [shape=box fontsize=16`, title)
-	fmt.Fprintf(b, ` label="%s\l"`, strings.Join(labels, `\l`))
+	fmt.Fprintf(b, ` label="%s\l"`, strings.Join(escapeForDot(labels), `\l`))
 	if b.config.LegendURL != "" {
 		fmt.Fprintf(b, ` URL="%s" target="_blank"`, b.config.LegendURL)
 	}
@@ -154,7 +154,7 @@ func (b *builder) addNode(node *Node, nodeID int, maxFlat float64) {
 	if flat != 0 {
 		label = label + fmt.Sprintf(`%s (%s)`,
 			flatValue,
-			strings.TrimSpace(percentage(flat, b.config.Total)))
+			strings.TrimSpace(measurement.Percentage(flat, b.config.Total)))
 	} else {
 		label = label + "0"
 	}
@@ -168,7 +168,7 @@ func (b *builder) addNode(node *Node, nodeID int, maxFlat float64) {
 		cumValue = b.config.FormatValue(cum)
 		label = label + fmt.Sprintf(`of %s (%s)`,
 			cumValue,
-			strings.TrimSpace(percentage(cum, b.config.Total)))
+			strings.TrimSpace(measurement.Percentage(cum, b.config.Total)))
 	}
 
 	// Scale font sizes from 8 to 24 based on percentage of flat frequency.
@@ -380,25 +380,9 @@ func dotColor(score float64, isBackground bool) string {
 	return fmt.Sprintf("#%02x%02x%02x", uint8(r*255.0), uint8(g*255.0), uint8(b*255.0))
 }
 
-// percentage computes the percentage of total of a value, and encodes
-// it as a string. At least two digits of precision are printed.
-func percentage(value, total int64) string {
-	var ratio float64
-	if total != 0 {
-		ratio = math.Abs(float64(value)/float64(total)) * 100
-	}
-	switch {
-	case math.Abs(ratio) >= 99.95 && math.Abs(ratio) <= 100.05:
-		return "  100%"
-	case math.Abs(ratio) >= 1.0:
-		return fmt.Sprintf("%5.2f%%", ratio)
-	default:
-		return fmt.Sprintf("%5.2g%%", ratio)
-	}
-}
-
 func multilinePrintableName(info *NodeInfo) string {
 	infoCopy := *info
+	infoCopy.Name = ShortenFunctionName(infoCopy.Name)
 	infoCopy.Name = strings.Replace(infoCopy.Name, "::", `\n`, -1)
 	infoCopy.Name = strings.Replace(infoCopy.Name, ".", `\n`, -1)
 	if infoCopy.File != "" {
@@ -487,4 +471,15 @@ func min64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// escapeForDot escapes double quotes and backslashes, and replaces Graphviz's
+// "center" character (\n) with a left-justified character.
+// See https://graphviz.org/doc/info/attrs.html#k:escString for more info.
+func escapeForDot(in []string) []string {
+	var out = make([]string, len(in))
+	for i := range in {
+		out[i] = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(in[i], `\`, `\\`), `"`, `\"`), "\n", `\l`)
+	}
+	return out
 }

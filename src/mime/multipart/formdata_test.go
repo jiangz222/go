@@ -7,13 +7,14 @@ package multipart
 import (
 	"bytes"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"testing"
 )
 
 func TestReadForm(t *testing.T) {
-	b := strings.NewReader(strings.Replace(message, "\n", "\r\n", -1))
+	b := strings.NewReader(strings.ReplaceAll(message, "\n", "\r\n"))
 	r := NewReader(b, boundary)
 	f, err := r.ReadForm(25)
 	if err != nil {
@@ -39,7 +40,7 @@ func TestReadForm(t *testing.T) {
 }
 
 func TestReadFormWithNamelessFile(t *testing.T) {
-	b := strings.NewReader(strings.Replace(messageWithFileWithoutName, "\n", "\r\n", -1))
+	b := strings.NewReader(strings.ReplaceAll(messageWithFileWithoutName, "\n", "\r\n"))
 	r := NewReader(b, boundary)
 	f, err := r.ReadForm(25)
 	if err != nil {
@@ -47,12 +48,41 @@ func TestReadFormWithNamelessFile(t *testing.T) {
 	}
 	defer f.RemoveAll()
 
-	fd := testFile(t, f.File["hiddenfile"][0], "", filebContents)
-	if _, ok := fd.(sectionReadCloser); !ok {
-		t.Errorf("file has unexpected underlying type %T", fd)
+	if g, e := f.Value["hiddenfile"][0], filebContents; g != e {
+		t.Errorf("hiddenfile value = %q, want %q", g, e)
 	}
-	fd.Close()
+}
 
+// Issue 40430: Ensure that we report integer overflows in additions of maxMemory,
+// instead of silently and subtly failing without indication.
+func TestReadFormMaxMemoryOverflow(t *testing.T) {
+	b := strings.NewReader(strings.ReplaceAll(messageWithTextContentType, "\n", "\r\n"))
+	r := NewReader(b, boundary)
+	f, err := r.ReadForm(math.MaxInt64)
+	if err == nil {
+		t.Fatal("Unexpected a non-nil error")
+	}
+	if f != nil {
+		t.Fatalf("Unexpected returned a non-nil form: %v\n", f)
+	}
+	if g, w := err.Error(), "integer overflow from maxMemory"; !strings.Contains(g, w) {
+		t.Errorf(`Error mismatch\n%q\ndid not contain\n%q`, g, w)
+	}
+}
+
+func TestReadFormWithTextContentType(t *testing.T) {
+	// From https://github.com/golang/go/issues/24041
+	b := strings.NewReader(strings.ReplaceAll(messageWithTextContentType, "\n", "\r\n"))
+	r := NewReader(b, boundary)
+	f, err := r.ReadForm(25)
+	if err != nil {
+		t.Fatal("ReadForm:", err)
+	}
+	defer f.RemoveAll()
+
+	if g, e := f.Value["texta"][0], textaValue; g != e {
+		t.Errorf("texta value = %q, want %q", g, e)
+	}
 }
 
 func testFile(t *testing.T, fh *FileHeader, efn, econtent string) File {
@@ -92,6 +122,15 @@ Content-Type: text/plain
 
 ` + filebContents + `
 --MyBoundary--
+`
+
+const messageWithTextContentType = `
+--MyBoundary
+Content-Disposition: form-data; name="texta"
+Content-Type: text/plain
+
+` + textaValue + `
+--MyBoundary
 `
 
 const message = `
@@ -155,7 +194,11 @@ func (r *failOnReadAfterErrorReader) Read(p []byte) (n int, err error) {
 // TestReadForm_NonFileMaxMemory asserts that the ReadForm maxMemory limit is applied
 // while processing non-file form data as well as file form data.
 func TestReadForm_NonFileMaxMemory(t *testing.T) {
-	largeTextValue := strings.Repeat("1", (10<<20)+25)
+	n := 10<<20 + 25
+	if testing.Short() {
+		n = 10<<10 + 25
+	}
+	largeTextValue := strings.Repeat("1", n)
 	message := `--MyBoundary
 Content-Disposition: form-data; name="largetext"
 
@@ -163,7 +206,7 @@ Content-Disposition: form-data; name="largetext"
 --MyBoundary--
 `
 
-	testBody := strings.Replace(message, "\n", "\r\n", -1)
+	testBody := strings.ReplaceAll(message, "\n", "\r\n")
 	testCases := []struct {
 		name      string
 		maxMemory int64
@@ -175,6 +218,9 @@ Content-Disposition: form-data; name="largetext"
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.maxMemory == 0 && testing.Short() {
+				t.Skip("skipping in -short mode")
+			}
 			b := strings.NewReader(testBody)
 			r := NewReader(b, boundary)
 			f, err := r.ReadForm(tc.maxMemory)

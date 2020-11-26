@@ -1,6 +1,6 @@
 // Derived from Inferno utils/6l/obj.c and utils/6l/span.c
-// https://bitbucket.org/inferno-os/inferno-os/src/default/utils/6l/obj.c
-// https://bitbucket.org/inferno-os/inferno-os/src/default/utils/6l/span.c
+// https://bitbucket.org/inferno-os/inferno-os/src/master/utils/6l/obj.c
+// https://bitbucket.org/inferno-os/inferno-os/src/master/utils/6l/span.c
 //
 //	Copyright © 1994-1999 Lucent Technologies Inc.  All rights reserved.
 //	Portions Copyright © 1995-1997 C H Forsyth (forsyth@terzarima.net)
@@ -46,12 +46,7 @@ func (s *LSym) Grow(lsiz int64) {
 	if len(s.P) >= siz {
 		return
 	}
-	// TODO(dfc) append cap-len at once, rather than
-	// one byte at a time.
-	for cap(s.P) < siz {
-		s.P = append(s.P[:cap(s.P)], 0)
-	}
-	s.P = s.P[:siz]
+	s.P = append(s.P, make([]byte, siz-len(s.P))...)
 }
 
 // GrowCap increases the capacity of s.P to c.
@@ -197,6 +192,9 @@ func (s *LSym) WriteBytes(ctxt *Link, off int64, b []byte) int64 {
 }
 
 func Addrel(s *LSym) *Reloc {
+	if s.R == nil {
+		s.R = make([]Reloc, 0, 4)
+	}
 	s.R = append(s.R, Reloc{})
 	return &s.R[len(s.R)-1]
 }

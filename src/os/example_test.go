@@ -6,6 +6,7 @@ package os_test
 
 import (
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"time"
@@ -28,6 +29,7 @@ func ExampleOpenFile_append() {
 		log.Fatal(err)
 	}
 	if _, err := f.Write([]byte("appended some data\n")); err != nil {
+		f.Close() // ignore error; Write error takes precedence
 		log.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
@@ -55,14 +57,15 @@ func ExampleFileMode() {
 		log.Fatal(err)
 	}
 
+	fmt.Printf("permissions: %#o\n", fi.Mode().Perm()) // 0400, 0777, etc.
 	switch mode := fi.Mode(); {
 	case mode.IsRegular():
 		fmt.Println("regular file")
 	case mode.IsDir():
 		fmt.Println("directory")
-	case mode&os.ModeSymlink != 0:
+	case mode&fs.ModeSymlink != 0:
 		fmt.Println("symbolic link")
-	case mode&os.ModeNamedPipe != 0:
+	case mode&fs.ModeNamedPipe != 0:
 		fmt.Println("named pipe")
 	}
 }
@@ -70,20 +73,35 @@ func ExampleFileMode() {
 func ExampleIsNotExist() {
 	filename := "a-nonexistent-file"
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		fmt.Printf("file does not exist")
+		fmt.Println("file does not exist")
 	}
 	// Output:
 	// file does not exist
 }
 
-func init() {
-	os.Setenv("USER", "gopher")
-	os.Setenv("HOME", "/usr/gopher")
-	os.Unsetenv("GOPATH")
+func ExampleExpand() {
+	mapper := func(placeholderName string) string {
+		switch placeholderName {
+		case "DAY_PART":
+			return "morning"
+		case "NAME":
+			return "Gopher"
+		}
+
+		return ""
+	}
+
+	fmt.Println(os.Expand("Good ${DAY_PART}, $NAME!", mapper))
+
+	// Output:
+	// Good morning, Gopher!
 }
 
 func ExampleExpandEnv() {
-	fmt.Println(os.ExpandEnv("$USER lives in ${HOME}."))
+	os.Setenv("NAME", "gopher")
+	os.Setenv("BURROW", "/usr/gopher")
+
+	fmt.Println(os.ExpandEnv("$NAME lives in ${BURROW}."))
 
 	// Output:
 	// gopher lives in /usr/gopher.
@@ -99,16 +117,24 @@ func ExampleLookupEnv() {
 		}
 	}
 
-	show("USER")
-	show("GOPATH")
+	os.Setenv("SOME_KEY", "value")
+	os.Setenv("EMPTY_KEY", "")
+
+	show("SOME_KEY")
+	show("EMPTY_KEY")
+	show("MISSING_KEY")
 
 	// Output:
-	// USER=gopher
-	// GOPATH not set
+	// SOME_KEY=value
+	// EMPTY_KEY=
+	// MISSING_KEY not set
 }
 
 func ExampleGetenv() {
-	fmt.Printf("%s lives in %s.\n", os.Getenv("USER"), os.Getenv("HOME"))
+	os.Setenv("NAME", "gopher")
+	os.Setenv("BURROW", "/usr/gopher")
+
+	fmt.Printf("%s lives in %s.\n", os.Getenv("NAME"), os.Getenv("BURROW"))
 
 	// Output:
 	// gopher lives in /usr/gopher.

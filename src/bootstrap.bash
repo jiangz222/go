@@ -45,10 +45,11 @@ fi
 unset GOROOT
 src=$(cd .. && pwd)
 echo "#### Copying to $targ"
-cp -R "$src" "$targ"
+cp -Rp "$src" "$targ"
 cd "$targ"
 echo
 echo "#### Cleaning $targ"
+chmod -R +w .
 rm -f .gitignore
 if [ -e .git ]; then
 	git clean -f -d
@@ -72,12 +73,17 @@ if [ "$goos" = "$gohostos" -a "$goarch" = "$gohostarch" ]; then
 	# prepare a clean toolchain for others.
 	true
 else
+	rm -f bin/go_${goos}_${goarch}_exec
 	mv bin/*_*/* bin
 	rmdir bin/*_*
 	rm -rf "pkg/${gohostos}_${gohostarch}" "pkg/tool/${gohostos}_${gohostarch}"
 fi
 
-GITREV=$(git rev-parse --short HEAD)
+if [ "$BOOTSTRAP_FORMAT" = "mintgz" ]; then
+	# Fetch git revision before rm -rf .git.
+	GITREV=$(git rev-parse --short HEAD)
+fi
+
 rm -rf pkg/bootstrap pkg/obj .git
 
 # Support for building minimal tar.gz for the builders.

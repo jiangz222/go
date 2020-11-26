@@ -62,6 +62,10 @@ loadregs:
 	// Return result.
 	POPQ	CX
 	MOVQ	AX, libcall_r1(CX)
+	// Floating point return values are returned in XMM0. Setting r2 to this
+	// value in case this call returned a floating point value. For details,
+	// see https://docs.microsoft.com/en-us/cpp/build/x64-calling-convention
+	MOVQ    X0, libcall_r2(CX)
 
 	// GetLastError().
 	MOVQ	0x30(GS), DI
@@ -89,7 +93,7 @@ TEXT runtime·badsignal2(SB),NOSPLIT|NOFRAME,$48
 	MOVQ	$0, 32(SP)	// overlapped
 	MOVQ	runtime·_WriteFile(SB), AX
 	CALL	AX
-	
+
 	RET
 
 // faster get/set last error
@@ -110,7 +114,7 @@ TEXT runtime·setlasterror(SB),NOSPLIT,$0
 // exception record and context pointers.
 // Handler function is stored in AX.
 // Return 0 for 'not handled', -1 for handled.
-TEXT runtime·sigtramp(SB),NOSPLIT|NOFRAME,$0-0
+TEXT sigtramp<>(SB),NOSPLIT|NOFRAME,$0-0
 	// CX: PEXCEPTION_POINTERS ExceptionInfo
 
 	// DI SI BP BX R12 R13 R14 R15 registers and DF flag are preserved
@@ -200,15 +204,15 @@ done:
 
 TEXT runtime·exceptiontramp(SB),NOSPLIT|NOFRAME,$0
 	MOVQ	$runtime·exceptionhandler(SB), AX
-	JMP	runtime·sigtramp(SB)
+	JMP	sigtramp<>(SB)
 
 TEXT runtime·firstcontinuetramp(SB),NOSPLIT|NOFRAME,$0-0
 	MOVQ	$runtime·firstcontinuehandler(SB), AX
-	JMP	runtime·sigtramp(SB)
+	JMP	sigtramp<>(SB)
 
 TEXT runtime·lastcontinuetramp(SB),NOSPLIT|NOFRAME,$0-0
 	MOVQ	$runtime·lastcontinuehandler(SB), AX
-	JMP	runtime·sigtramp(SB)
+	JMP	sigtramp<>(SB)
 
 TEXT runtime·ctrlhandler(SB),NOSPLIT|NOFRAME,$8
 	MOVQ	CX, 16(SP)		// spill
@@ -287,31 +291,20 @@ TEXT runtime·callbackasm1(SB),NOSPLIT,$0
   	MOVQ	DX, (16+8)(SP)
   	MOVQ	R8, (16+16)(SP)
   	MOVQ	R9, (16+24)(SP)
+	// R8 = address of args vector
+	LEAQ	(16+0)(SP), R8
 
-	// remove return address from stack, we are not returning there
+	// remove return address from stack, we are not returning to callbackasm, but to its caller.
   	MOVQ	0(SP), AX
 	ADDQ	$8, SP
 
-	// determine index into runtime·cbctxts table
+	// determine index into runtime·cbs table
 	MOVQ	$runtime·callbackasm(SB), DX
 	SUBQ	DX, AX
 	MOVQ	$0, DX
 	MOVQ	$5, CX	// divide by 5 because each call instruction in runtime·callbacks is 5 bytes long
 	DIVL	CX
-
-	// find correspondent runtime·cbctxts table entry
-	MOVQ	runtime·cbctxts(SB), CX
-	MOVQ	-8(CX)(AX*8), AX
-
-	// extract callback context
-	MOVQ	wincallbackcontext_argsize(AX), DX
-	MOVQ	wincallbackcontext_gobody(AX), AX
-
-	// preserve whatever's at the memory location that
-	// the callback will use to store the return value
-	LEAQ	8(SP), CX       // args vector, skip return address
-	PUSHQ	0(CX)(DX*1)     // store 8 bytes from just after the args array
-	ADDQ	$8, DX          // extend argsize by size of return value
+	SUBQ	$1, AX	// subtract 1 because return PC is to the next slot
 
 	// DI SI BP BX R12 R13 R14 R15 registers and DF flag are preserved
 	// as required by windows callback convention.
@@ -326,18 +319,25 @@ TEXT runtime·callbackasm1(SB),NOSPLIT,$0
 	MOVQ	R14, 8(SP)
 	MOVQ	R15, 0(SP)
 
-	// prepare call stack.  use SUBQ to hide from stack frame checks
-	// cgocallback(Go func, void *frame, uintptr framesize)
-	SUBQ	$24, SP
-	MOVQ	DX, 16(SP)	// argsize (including return value)
-	MOVQ	CX, 8(SP)	// callback parameters
-	MOVQ	AX, 0(SP)	// address of target Go function
+	// Go ABI requires DF flag to be cleared.
 	CLD
-	CALL	runtime·cgocallback_gofunc(SB)
-	MOVQ	0(SP), AX
-	MOVQ	8(SP), CX
-	MOVQ	16(SP), DX
-	ADDQ	$24, SP
+
+	// Create a struct callbackArgs on our stack to be passed as
+	// the "frame" to cgocallback and on to callbackWrap.
+	SUBQ	$(24+callbackArgs__size), SP
+	MOVQ	AX, (24+callbackArgs_index)(SP) 	// callback index
+	MOVQ	R8, (24+callbackArgs_args)(SP)  	// address of args vector
+	MOVQ	$0, (24+callbackArgs_result)(SP)	// result
+	LEAQ	24(SP), AX
+	// Call cgocallback, which will call callbackWrap(frame).
+	MOVQ	$0, 16(SP)	// context
+	MOVQ	AX, 8(SP)	// frame (address of callbackArgs)
+	LEAQ	·callbackWrap(SB), BX
+	MOVQ	BX, 0(SP)	// PC of function value to call (callbackWrap)
+	CALL	·cgocallback(SB)
+	// Get callback result.
+	MOVQ	(24+callbackArgs_result)(SP), AX
+	ADDQ	$(24+callbackArgs__size), SP
 
 	// restore registers as required for windows callback
 	MOVQ	0(SP), R15
@@ -351,8 +351,7 @@ TEXT runtime·callbackasm1(SB),NOSPLIT,$0
 	ADDQ	$64, SP
 	POPFQ
 
-	MOVL	-8(CX)(DX*1), AX  // return value
-	POPQ	-8(CX)(DX*1)      // restore bytes just after the args
+	// The return value was placed in AX above.
 	RET
 
 // uint32 tstart_stdcall(M *newm);
@@ -363,7 +362,7 @@ TEXT runtime·tstart_stdcall(SB),NOSPLIT,$0
 	// Layout new m scheduler stack on os stack.
 	MOVQ	SP, AX
 	MOVQ	AX, (g_stack+stack_hi)(DX)
-	SUBQ	$(64*1024), AX		// stack size
+	SUBQ	$(64*1024), AX		// initial stack size (adjusted later)
 	MOVQ	AX, (g_stack+stack_lo)(DX)
 	ADDQ	$const__StackGuard, AX
 	MOVQ	AX, g_stackguard0(DX)
@@ -413,7 +412,7 @@ TEXT runtime·onosstack(SB),NOSPLIT,$0
 	MOVQ	R12, m_libcallg(R13)
 	// sp must be the last, because once async cpu profiler finds
 	// all three values to be non-zero, it will use them
-	LEAQ	usec+0(FP), R12
+	LEAQ	fn+0(FP), R12
 	MOVQ	R12, m_libcallsp(R13)
 
 	MOVQ	m_g0(R13), R14
@@ -453,6 +452,47 @@ TEXT runtime·usleep2(SB),NOSPLIT|NOFRAME,$48
 	MOVQ	40(SP), SP
 	RET
 
+// Runs on OS stack. duration (in 100ns units) is in BX.
+TEXT runtime·usleep2HighRes(SB),NOSPLIT|NOFRAME,$72
+	get_tls(CX)
+	CMPQ	CX, $0
+	JE	gisnotset
+
+	MOVQ	SP, AX
+	ANDQ	$~15, SP	// alignment as per Windows requirement
+	MOVQ	AX, 64(SP)
+
+	MOVQ	g(CX), CX
+	MOVQ	g_m(CX), CX
+	MOVQ	(m_mOS+mOS_highResTimer)(CX), CX	// hTimer
+	MOVQ	CX, 48(SP)				// save hTimer for later
+	// Want negative 100ns units.
+	NEGQ	BX
+	LEAQ	56(SP), DX				// lpDueTime
+	MOVQ	BX, (DX)
+	MOVQ	$0, R8					// lPeriod
+	MOVQ	$0, R9					// pfnCompletionRoutine
+	MOVQ	$0, AX
+	MOVQ	AX, 32(SP)				// lpArgToCompletionRoutine
+	MOVQ	AX, 40(SP)				// fResume
+	MOVQ	runtime·_SetWaitableTimer(SB), AX
+	CALL	AX
+
+	MOVQ	48(SP), CX				// handle
+	MOVQ	$0, DX					// alertable
+	MOVQ	$0, R8					// ptime
+	MOVQ	runtime·_NtWaitForSingleObject(SB), AX
+	CALL	AX
+
+	MOVQ	64(SP), SP
+	RET
+
+gisnotset:
+	// TLS is not configured. Call usleep2 instead.
+	MOVQ	$runtime·usleep2(SB), AX
+	CALL	AX
+	RET
+
 // Runs on OS stack.
 TEXT runtime·switchtothread(SB),NOSPLIT|NOFRAME,$0
 	MOVQ	SP, AX
@@ -465,7 +505,7 @@ TEXT runtime·switchtothread(SB),NOSPLIT|NOFRAME,$0
 	MOVQ	32(SP), SP
 	RET
 
-// See http://www.dcl.hpi.uni-potsdam.de/research/WRK/2007/08/getting-os-information-the-kuser_shared_data-structure/
+// See https://www.dcl.hpi.uni-potsdam.de/research/WRK/2007/08/getting-os-information-the-kuser_shared_data-structure/
 // Must read hi1, then lo, then hi2. The snapshot is valid if hi1 == hi2.
 #define _INTERRUPT_TIME 0x7ffe0008
 #define _SYSTEM_TIME 0x7ffe0014
@@ -473,7 +513,7 @@ TEXT runtime·switchtothread(SB),NOSPLIT|NOFRAME,$0
 #define time_hi1 4
 #define time_hi2 8
 
-TEXT runtime·nanotime(SB),NOSPLIT,$0-8
+TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 	CMPB	runtime·useQPCTime(SB), $0
 	JNE	useQPC
 	MOVQ	$_INTERRUPT_TIME, DI
@@ -486,7 +526,6 @@ loop:
 	SHLQ	$32, CX
 	ORQ	BX, CX
 	IMULQ	$100, CX
-	SUBQ	runtime·startNano(SB), CX
 	MOVQ	CX, ret+0(FP)
 	RET
 useQPC:
@@ -506,7 +545,6 @@ loop:
 	SHLQ	$32, AX
 	ORQ	BX, AX
 	IMULQ	$100, AX
-	SUBQ	runtime·startNano(SB), AX
 	MOVQ	AX, mono+16(FP)
 
 	MOVQ	$_SYSTEM_TIME, DI

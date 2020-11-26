@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"internal/testenv"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -34,7 +35,7 @@ func testWinSplitListTestIsValid(t *testing.T, ti int, tt SplitListTest,
 
 	const (
 		cmdfile             = `printdir.cmd`
-		perm    os.FileMode = 0700
+		perm    fs.FileMode = 0700
 	)
 
 	tmp, err := ioutil.TempDir("", "testWinSplitListTestIsValid")
@@ -79,7 +80,7 @@ func testWinSplitListTestIsValid(t *testing.T, ti int, tt SplitListTest,
 		cmd := &exec.Cmd{
 			Path: comspec,
 			Args: []string{`/c`, cmdfile},
-			Env:  []string{`Path=` + tt.list, `SystemRoot=` + systemRoot},
+			Env:  []string{`Path=` + systemRoot + "/System32;" + tt.list, `SystemRoot=` + systemRoot},
 			Dir:  tmp,
 		}
 		out, err := cmd.CombinedOutput()
@@ -412,6 +413,9 @@ func TestToNorm(t *testing.T) {
 		{`{{tmp}}\test`, `.\foo\bar`, `foo\bar`},
 		{`{{tmp}}\test`, `foo\..\foo\bar`, `foo\bar`},
 		{`{{tmp}}\test`, `FOO\BAR`, `foo\bar`},
+
+		// test UNC paths
+		{".", `\\localhost\c$`, `\\localhost\c$`},
 	}
 
 	tmp, err := ioutil.TempDir("", "testToNorm")
@@ -431,7 +435,7 @@ func TestToNorm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.MkdirAll(strings.Replace(testPath, "{{tmp}}", ctmp, -1), 0777)
+	err = os.MkdirAll(strings.ReplaceAll(testPath, "{{tmp}}", ctmp), 0777)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,6 +533,12 @@ func TestNTNamespaceSymlink(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpdir)
 
+	// Make sure tmpdir is not a symlink, otherwise tests will fail.
+	tmpdir, err = filepath.EvalSymlinks(tmpdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	vol := filepath.VolumeName(tmpdir)
 	output, err = exec.Command("cmd", "/c", "mountvol", vol, "/L").CombinedOutput()
 	if err != nil {
@@ -536,17 +546,42 @@ func TestNTNamespaceSymlink(t *testing.T) {
 	}
 	target := strings.Trim(string(output), " \n\r")
 
-	link := filepath.Join(tmpdir, "link")
-	output, err = exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	dirlink := filepath.Join(tmpdir, "dirlink")
+	output, err = exec.Command("cmd", "/c", "mklink", "/J", dirlink, target).CombinedOutput()
 	if err != nil {
-		t.Fatalf("failed to run mklink %v %v: %v %q", link, target, err, output)
+		t.Fatalf("failed to run mklink %v %v: %v %q", dirlink, target, err, output)
 	}
 
-	got, err := filepath.EvalSymlinks(link)
+	got, err := filepath.EvalSymlinks(dirlink)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := vol + `\`; got != want {
-		t.Errorf(`EvalSymlinks(%q): got %q, want %q`, link, got, want)
+		t.Errorf(`EvalSymlinks(%q): got %q, want %q`, dirlink, got, want)
+	}
+
+	// Make sure we have sufficient privilege to run mklink command.
+	testenv.MustHaveSymlink(t)
+
+	file := filepath.Join(tmpdir, "file")
+	err = ioutil.WriteFile(file, []byte(""), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target += file[len(filepath.VolumeName(file)):]
+
+	filelink := filepath.Join(tmpdir, "filelink")
+	output, err = exec.Command("cmd", "/c", "mklink", filelink, target).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to run mklink %v %v: %v %q", filelink, target, err, output)
+	}
+
+	got, err = filepath.EvalSymlinks(filelink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := file; got != want {
+		t.Errorf(`EvalSymlinks(%q): got %q, want %q`, filelink, got, want)
 	}
 }

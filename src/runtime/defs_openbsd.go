@@ -7,8 +7,11 @@
 /*
 Input to cgo.
 
-GOARCH=amd64 go tool cgo -cdefs defs_openbsd.go >defs_openbsd_amd64.h
-GOARCH=386 go tool cgo -cdefs defs_openbsd.go >defs_openbsd_386.h
+GOARCH=amd64 go tool cgo -godefs defs_openbsd.go
+GOARCH=386 go tool cgo -godefs defs_openbsd.go
+GOARCH=arm go tool cgo -godefs defs_openbsd.go
+GOARCH=arm64 go tool cgo -godefs defs_openbsd.go
+GOARCH=mips64 go tool cgo -godefs defs_openbsd.go
 */
 
 package runtime
@@ -21,6 +24,7 @@ package runtime
 #include <sys/unistd.h>
 #include <sys/signal.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 */
 import "C"
@@ -28,6 +32,11 @@ import "C"
 const (
 	EINTR  = C.EINTR
 	EFAULT = C.EFAULT
+	EAGAIN = C.EAGAIN
+	ENOSYS = C.ENOSYS
+
+	O_NONBLOCK = C.O_NONBLOCK
+	O_CLOEXEC  = C.O_CLOEXEC
 
 	PROT_NONE  = C.PROT_NONE
 	PROT_READ  = C.PROT_READ
@@ -37,6 +46,7 @@ const (
 	MAP_ANON    = C.MAP_ANON
 	MAP_PRIVATE = C.MAP_PRIVATE
 	MAP_FIXED   = C.MAP_FIXED
+	MAP_STACK   = C.MAP_STACK
 
 	MADV_FREE = C.MADV_FREE
 

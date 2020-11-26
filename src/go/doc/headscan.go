@@ -22,9 +22,10 @@ import (
 	"go/doc"
 	"go/parser"
 	"go/token"
+	"internal/lazyregexp"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 )
@@ -35,11 +36,11 @@ var (
 )
 
 // ToHTML in comment.go assigns a (possibly blank) ID to each heading
-var html_h = regexp.MustCompile(`<h3 id="[^"]*">`)
+var html_h = lazyregexp.New(`<h3 id="[^"]*">`)
 
 const html_endh = "</h3>\n"
 
-func isGoFile(fi os.FileInfo) bool {
+func isGoFile(fi fs.FileInfo) bool {
 	return strings.HasSuffix(fi.Name(), ".go") &&
 		!strings.HasSuffix(fi.Name(), "_test.go")
 }
@@ -68,7 +69,7 @@ func main() {
 	flag.Parse()
 	fset := token.NewFileSet()
 	nheadings := 0
-	err := filepath.Walk(*root, func(path string, fi os.FileInfo, err error) error {
+	err := filepath.Walk(*root, func(path string, fi fs.FileInfo, err error) error {
 		if !fi.IsDir() {
 			return nil
 		}

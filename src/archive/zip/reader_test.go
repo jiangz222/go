@@ -8,27 +8,31 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"internal/obscuretestdata"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
 type ZipTest struct {
-	Name    string
-	Source  func() (r io.ReaderAt, size int64) // if non-nil, used instead of testdata/<Name> file
-	Comment string
-	File    []ZipTestFile
-	Error   error // the error that Opening this file should return
+	Name     string
+	Source   func() (r io.ReaderAt, size int64) // if non-nil, used instead of testdata/<Name> file
+	Comment  string
+	File     []ZipTestFile
+	Obscured bool  // needed for Apple notarization (golang.org/issue/34986)
+	Error    error // the error that Opening this file should return
 }
 
 type ZipTestFile struct {
 	Name     string
-	Mode     os.FileMode
+	Mode     fs.FileMode
 	NonUTF8  bool
 	ModTime  time.Time
 	Modified time.Time
@@ -105,7 +109,7 @@ var tests = []ZipTest{
 				Name:     "symlink",
 				Content:  []byte("../target"),
 				Modified: time.Date(2012, 2, 3, 19, 56, 48, 0, timeZone(-2*time.Hour)),
-				Mode:     0777 | os.ModeSymlink,
+				Mode:     0777 | fs.ModeSymlink,
 			},
 		},
 	},
@@ -147,7 +151,7 @@ var tests = []ZipTest{
 				Name:     "dir/empty/",
 				Content:  []byte{},
 				Modified: time.Date(2011, 12, 8, 10, 8, 6, 0, time.UTC),
-				Mode:     os.ModeDir | 0777,
+				Mode:     fs.ModeDir | 0777,
 			},
 			{
 				Name:     "readonly",
@@ -177,7 +181,7 @@ var tests = []ZipTest{
 				Name:     "dir/empty/",
 				Content:  []byte{},
 				Modified: time.Date(2011, 12, 8, 10, 8, 6, 0, timeZone(0)),
-				Mode:     os.ModeDir | 0777,
+				Mode:     fs.ModeDir | 0777,
 			},
 			{
 				Name:     "readonly",
@@ -189,8 +193,12 @@ var tests = []ZipTest{
 	},
 	{
 		// created by Go, before we wrote the "optional" data
-		// descriptor signatures (which are required by OS X)
-		Name: "go-no-datadesc-sig.zip",
+		// descriptor signatures (which are required by macOS).
+		// Use obscured file to avoid Apple’s notarization service
+		// rejecting the toolchain due to an inability to unzip this archive.
+		// See golang.org/issue/34986
+		Name:     "go-no-datadesc-sig.zip.base64",
+		Obscured: true,
 		File: []ZipTestFile{
 			{
 				Name:     "foo.txt",
@@ -208,7 +216,7 @@ var tests = []ZipTest{
 	},
 	{
 		// created by Go, after we wrote the "optional" data
-		// descriptor signatures (which are required by OS X)
+		// descriptor signatures (which are required by macOS)
 		Name: "go-with-datadesc-sig.zip",
 		File: []ZipTestFile{
 			{
@@ -414,7 +422,7 @@ var tests = []ZipTest{
 				Name:     "test.txt",
 				Content:  []byte{},
 				Size:     1<<32 - 1,
-				Modified: time.Date(2017, 10, 31, 21, 17, 27, 0, timeZone(-7*time.Hour)),
+				Modified: time.Date(2017, 10, 31, 21, 11, 57, 0, timeZone(-7*time.Hour)),
 				Mode:     0644,
 			},
 		},
@@ -496,8 +504,18 @@ func readTestZip(t *testing.T, zt ZipTest) {
 		rat, size := zt.Source()
 		z, err = NewReader(rat, size)
 	} else {
+		path := filepath.Join("testdata", zt.Name)
+		if zt.Obscured {
+			tf, err := obscuretestdata.DecodeToTempFile(path)
+			if err != nil {
+				t.Errorf("obscuretestdata.DecodeToTempFile(%s): %v", path, err)
+				return
+			}
+			defer os.Remove(tf)
+			path = tf
+		}
 		var rc *ReadCloser
-		rc, err = OpenReader(filepath.Join("testdata", zt.Name))
+		rc, err = OpenReader(path)
 		if err == nil {
 			defer rc.Close()
 			z = &rc.Reader
@@ -629,7 +647,7 @@ func readTestFile(t *testing.T, zt ZipTest, ft ZipTestFile, f *File) {
 	}
 }
 
-func testFileMode(t *testing.T, f *File, want os.FileMode) {
+func testFileMode(t *testing.T, f *File, want fs.FileMode) {
 	mode := f.Mode()
 	if want == 0 {
 		t.Errorf("%s mode: got %v, want none", f.Name, mode)
@@ -657,6 +675,12 @@ func TestInvalidFiles(t *testing.T) {
 	_, err = NewReader(bytes.NewReader(b), size)
 	if err != ErrFormat {
 		t.Errorf("sigs: error=%v, want %v", err, ErrFormat)
+	}
+
+	// negative size
+	_, err = NewReader(bytes.NewReader([]byte("foobar")), -1)
+	if err == nil {
+		t.Errorf("archive/zip.NewReader: expected error when negative size is passed")
 	}
 }
 
@@ -906,7 +930,7 @@ func returnBigZipBytes() (r io.ReaderAt, size int64) {
 		if err != nil {
 			panic(err)
 		}
-		b, err = ioutil.ReadAll(f)
+		b, err = io.ReadAll(f)
 		if err != nil {
 			panic(err)
 		}
@@ -963,7 +987,7 @@ func TestIssue10957(t *testing.T) {
 			continue
 		}
 		if f.UncompressedSize64 < 1e6 {
-			n, err := io.Copy(ioutil.Discard, r)
+			n, err := io.Copy(io.Discard, r)
 			if i == 3 && err != io.ErrUnexpectedEOF {
 				t.Errorf("File[3] error = %v; want io.ErrUnexpectedEOF", err)
 			}
@@ -975,15 +999,17 @@ func TestIssue10957(t *testing.T) {
 	}
 }
 
-// Verify the number of files is sane.
+// Verify that this particular malformed zip file is rejected.
 func TestIssue10956(t *testing.T) {
 	data := []byte("PK\x06\x06PK\x06\a0000\x00\x00\x00\x00\x00\x00\x00\x00" +
 		"0000PK\x05\x06000000000000" +
 		"0000\v\x00000\x00\x00\x00\x00\x00\x00\x000")
-	_, err := NewReader(bytes.NewReader(data), int64(len(data)))
-	const want = "TOC declares impossible 3472328296227680304 files in 57 byte"
-	if err == nil && !strings.Contains(err.Error(), want) {
-		t.Errorf("error = %v; want %q", err, want)
+	r, err := NewReader(bytes.NewReader(data), int64(len(data)))
+	if err == nil {
+		t.Errorf("got nil error, want ErrFormat")
+	}
+	if r != nil {
+		t.Errorf("got non-nil Reader, want nil")
 	}
 }
 
@@ -1003,7 +1029,7 @@ func TestIssue11146(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = ioutil.ReadAll(r)
+	_, err = io.ReadAll(r)
 	if err != io.ErrUnexpectedEOF {
 		t.Errorf("File[0] error = %v; want io.ErrUnexpectedEOF", err)
 	}
@@ -1044,5 +1070,15 @@ func TestIssue12449(t *testing.T) {
 	_, err := NewReader(bytes.NewReader([]byte(data)), int64(len(data)))
 	if err != nil {
 		t.Errorf("Error reading the archive: %v", err)
+	}
+}
+
+func TestFS(t *testing.T) {
+	z, err := OpenReader("testdata/unix.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fstest.TestFS(z, "hello", "dir/bar", "dir/empty", "readonly"); err != nil {
+		t.Fatal(err)
 	}
 }

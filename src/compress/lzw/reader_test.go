@@ -66,7 +66,7 @@ var lzwTests = []lzwTest{
 		"\x54\x9e\x08\x29\xf2\x44\x8a\x93\x27\x54\x04",
 		io.ErrUnexpectedEOF,
 	},
-	// This example comes from http://en.wikipedia.org/wiki/Graphics_Interchange_Format.
+	// This example comes from https://en.wikipedia.org/wiki/Graphics_Interchange_Format.
 	{
 		"gif;LSB;8",
 		"\x28\xff\xff\xff\x28\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",
@@ -206,7 +206,7 @@ func TestNoLongerSavingPriorExpansions(t *testing.T) {
 	in = append(in, 0x80, 0xff, 0x0f, 0x08)
 
 	r := NewReader(bytes.NewReader(in), LSB, 8)
-	nDecoded, err := io.Copy(ioutil.Discard, r)
+	nDecoded, err := io.Copy(io.Discard, r)
 	if err != nil {
 		t.Fatalf("Copy: %v", err)
 	}
@@ -246,7 +246,7 @@ func BenchmarkDecoder(b *testing.B) {
 			runtime.GC()
 			b.StartTimer()
 			for i := 0; i < b.N; i++ {
-				io.Copy(ioutil.Discard, NewReader(bytes.NewReader(buf1), LSB, 8))
+				io.Copy(io.Discard, NewReader(bytes.NewReader(buf1), LSB, 8))
 			}
 		})
 	}

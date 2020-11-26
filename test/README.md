@@ -4,7 +4,11 @@ They are run as part of all.bash.
 
 To run just these tests, execute:
 
-    go run run.go
+    ../bin/go run run.go
+
+To run just tests from specified files in this directory, execute:
+
+    ../bin/go run run.go -- file1.go file2.go ...
 
 Standard library tests should be written as regular Go tests in the appropriate package.
 

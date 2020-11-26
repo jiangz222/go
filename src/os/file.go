@@ -34,6 +34,10 @@
 //	}
 //	fmt.Printf("read %d bytes: %q\n", count, data[:count])
 //
+// Note: The maximum number of concurrent operations on a File may be limited by
+// the OS or the system. The number should be high, but exceeding it may degrade
+// performance or cause other issues.
+//
 package os
 
 import (
@@ -41,6 +45,8 @@ import (
 	"internal/poll"
 	"internal/testlog"
 	"io"
+	"io/fs"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -72,7 +78,7 @@ const (
 	O_CREATE int = syscall.O_CREAT  // create a new file if none exists.
 	O_EXCL   int = syscall.O_EXCL   // used with O_CREATE, file must not exist.
 	O_SYNC   int = syscall.O_SYNC   // open for synchronous I/O.
-	O_TRUNC  int = syscall.O_TRUNC  // if possible, truncate file when opened.
+	O_TRUNC  int = syscall.O_TRUNC  // truncate regular writable file when opened.
 )
 
 // Seek whence values.
@@ -97,6 +103,10 @@ func (e *LinkError) Error() string {
 	return e.Op + " " + e.Old + " " + e.New + ": " + e.Err.Error()
 }
 
+func (e *LinkError) Unwrap() error {
+	return e.Err
+}
+
 // Read reads up to len(b) bytes from the File.
 // It returns the number of bytes read and any error encountered.
 // At end of file, Read returns 0, io.EOF.
@@ -118,7 +128,7 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	}
 
 	if off < 0 {
-		return 0, &PathError{"readat", f.name, errors.New("negative offset")}
+		return 0, &PathError{Op: "readat", Path: f.name, Err: errors.New("negative offset")}
 	}
 
 	for len(b) > 0 {
@@ -132,6 +142,26 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 		off += int64(m)
 	}
 	return
+}
+
+// ReadFrom implements io.ReaderFrom.
+func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
+	if err := f.checkValid("write"); err != nil {
+		return 0, err
+	}
+	n, handled, e := f.readFrom(r)
+	if !handled {
+		return genericReadFrom(f, r) // without wrapping
+	}
+	return n, f.wrapErr("write", e)
+}
+
+func genericReadFrom(f *File, r io.Reader) (int64, error) {
+	return io.Copy(onlyWriter{f}, r)
+}
+
+type onlyWriter struct {
+	io.Writer
 }
 
 // Write writes len(b) bytes to the File.
@@ -158,16 +188,23 @@ func (f *File) Write(b []byte) (n int, err error) {
 	return n, err
 }
 
+var errWriteAtInAppendMode = errors.New("os: invalid use of WriteAt on file opened with O_APPEND")
+
 // WriteAt writes len(b) bytes to the File starting at byte offset off.
 // It returns the number of bytes written and an error, if any.
 // WriteAt returns a non-nil error when n != len(b).
+//
+// If file was opened with the O_APPEND flag, WriteAt returns an error.
 func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
+	if f.appendMode {
+		return 0, errWriteAtInAppendMode
+	}
 
 	if off < 0 {
-		return 0, &PathError{"writeat", f.name, errors.New("negative offset")}
+		return 0, &PathError{Op: "writeat", Path: f.name, Err: errors.New("negative offset")}
 	}
 
 	for len(b) > 0 {
@@ -188,6 +225,10 @@ func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 // relative to the current offset, and 2 means relative to the end.
 // It returns the new offset and an error, if any.
 // The behavior of Seek on a file opened with O_APPEND is not specified.
+//
+// If f is a directory, the behavior of Seek varies by operating
+// system; you can seek to the beginning of the directory on Unix-like
+// operating systems, but not on Windows.
 func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 	if err := f.checkValid("seek"); err != nil {
 		return 0, err
@@ -212,18 +253,38 @@ func (f *File) WriteString(s string) (n int, err error) {
 // bits (before umask).
 // If there is an error, it will be of type *PathError.
 func Mkdir(name string, perm FileMode) error {
-	e := syscall.Mkdir(fixLongPath(name), syscallMode(perm))
+	if runtime.GOOS == "windows" && isWindowsNulName(name) {
+		return &PathError{Op: "mkdir", Path: name, Err: syscall.ENOTDIR}
+	}
+	longName := fixLongPath(name)
+	e := ignoringEINTR(func() error {
+		return syscall.Mkdir(longName, syscallMode(perm))
+	})
 
 	if e != nil {
-		return &PathError{"mkdir", name, e}
+		return &PathError{Op: "mkdir", Path: name, Err: e}
 	}
 
 	// mkdir(2) itself won't handle the sticky bit on *BSD and Solaris
 	if !supportsCreateWithStickyBit && perm&ModeSticky != 0 {
-		Chmod(name, perm)
+		e = setStickyBit(name)
+
+		if e != nil {
+			Remove(name)
+			return e
+		}
 	}
 
 	return nil
+}
+
+// setStickyBit adds ModeSticky to the permission bits of path, non atomic.
+func setStickyBit(name string) error {
+	fi, err := Stat(name)
+	if err != nil {
+		return err
+	}
+	return Chmod(name, fi.Mode()|ModeSticky)
 }
 
 // Chdir changes the current working directory to the named directory.
@@ -231,7 +292,7 @@ func Mkdir(name string, perm FileMode) error {
 func Chdir(dir string) error {
 	if e := syscall.Chdir(dir); e != nil {
 		testlog.Open(dir) // observe likely non-existent directory
-		return &PathError{"chdir", dir, e}
+		return &PathError{Op: "chdir", Path: dir, Err: e}
 	}
 	if log := testlog.Logger(); log != nil {
 		wd, err := Getwd()
@@ -250,10 +311,10 @@ func Open(name string) (*File, error) {
 	return OpenFile(name, O_RDONLY, 0)
 }
 
-// Create creates the named file with mode 0666 (before umask), truncating
-// it if it already exists. If successful, methods on the returned
-// File can be used for I/O; the associated file descriptor has mode
-// O_RDWR.
+// Create creates or truncates the named file. If the file already exists,
+// it is truncated. If the file does not exist, it is created with mode 0666
+// (before umask). If successful, methods on the returned File can
+// be used for I/O; the associated file descriptor has mode O_RDWR.
 // If there is an error, it will be of type *PathError.
 func Create(name string) (*File, error) {
 	return OpenFile(name, O_RDWR|O_CREATE|O_TRUNC, 0666)
@@ -261,12 +322,19 @@ func Create(name string) (*File, error) {
 
 // OpenFile is the generalized open call; most users will use Open
 // or Create instead. It opens the named file with specified flag
-// (O_RDONLY etc.) and perm (before umask), if applicable. If successful,
+// (O_RDONLY etc.). If the file does not exist, and the O_CREATE flag
+// is passed, it is created with mode perm (before umask). If successful,
 // methods on the returned File can be used for I/O.
 // If there is an error, it will be of type *PathError.
 func OpenFile(name string, flag int, perm FileMode) (*File, error) {
 	testlog.Open(name)
-	return openFileNolog(name, flag, perm)
+	f, err := openFileNolog(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	f.appendMode = flag&O_APPEND != 0
+
+	return f, nil
 }
 
 // lstat is overridden in tests.
@@ -299,7 +367,7 @@ func (f *File) wrapErr(op string, err error) error {
 	if err == poll.ErrFileClosing {
 		err = ErrClosed
 	}
-	return &PathError{op, f.name, err}
+	return &PathError{Op: op, Path: f.name, Err: err}
 }
 
 // TempDir returns the default directory to use for temporary files.
@@ -315,6 +383,136 @@ func TempDir() string {
 	return tempDir()
 }
 
+// UserCacheDir returns the default root directory to use for user-specific
+// cached data. Users should create their own application-specific subdirectory
+// within this one and use that.
+//
+// On Unix systems, it returns $XDG_CACHE_HOME as specified by
+// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html if
+// non-empty, else $HOME/.cache.
+// On Darwin, it returns $HOME/Library/Caches.
+// On Windows, it returns %LocalAppData%.
+// On Plan 9, it returns $home/lib/cache.
+//
+// If the location cannot be determined (for example, $HOME is not defined),
+// then it will return an error.
+func UserCacheDir() (string, error) {
+	var dir string
+
+	switch runtime.GOOS {
+	case "windows":
+		dir = Getenv("LocalAppData")
+		if dir == "" {
+			return "", errors.New("%LocalAppData% is not defined")
+		}
+
+	case "darwin":
+		dir = Getenv("HOME")
+		if dir == "" {
+			return "", errors.New("$HOME is not defined")
+		}
+		dir += "/Library/Caches"
+
+	case "plan9":
+		dir = Getenv("home")
+		if dir == "" {
+			return "", errors.New("$home is not defined")
+		}
+		dir += "/lib/cache"
+
+	default: // Unix
+		dir = Getenv("XDG_CACHE_HOME")
+		if dir == "" {
+			dir = Getenv("HOME")
+			if dir == "" {
+				return "", errors.New("neither $XDG_CACHE_HOME nor $HOME are defined")
+			}
+			dir += "/.cache"
+		}
+	}
+
+	return dir, nil
+}
+
+// UserConfigDir returns the default root directory to use for user-specific
+// configuration data. Users should create their own application-specific
+// subdirectory within this one and use that.
+//
+// On Unix systems, it returns $XDG_CONFIG_HOME as specified by
+// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html if
+// non-empty, else $HOME/.config.
+// On Darwin, it returns $HOME/Library/Application Support.
+// On Windows, it returns %AppData%.
+// On Plan 9, it returns $home/lib.
+//
+// If the location cannot be determined (for example, $HOME is not defined),
+// then it will return an error.
+func UserConfigDir() (string, error) {
+	var dir string
+
+	switch runtime.GOOS {
+	case "windows":
+		dir = Getenv("AppData")
+		if dir == "" {
+			return "", errors.New("%AppData% is not defined")
+		}
+
+	case "darwin":
+		dir = Getenv("HOME")
+		if dir == "" {
+			return "", errors.New("$HOME is not defined")
+		}
+		dir += "/Library/Application Support"
+
+	case "plan9":
+		dir = Getenv("home")
+		if dir == "" {
+			return "", errors.New("$home is not defined")
+		}
+		dir += "/lib"
+
+	default: // Unix
+		dir = Getenv("XDG_CONFIG_HOME")
+		if dir == "" {
+			dir = Getenv("HOME")
+			if dir == "" {
+				return "", errors.New("neither $XDG_CONFIG_HOME nor $HOME are defined")
+			}
+			dir += "/.config"
+		}
+	}
+
+	return dir, nil
+}
+
+// UserHomeDir returns the current user's home directory.
+//
+// On Unix, including macOS, it returns the $HOME environment variable.
+// On Windows, it returns %USERPROFILE%.
+// On Plan 9, it returns the $home environment variable.
+func UserHomeDir() (string, error) {
+	env, enverr := "HOME", "$HOME"
+	switch runtime.GOOS {
+	case "windows":
+		env, enverr = "USERPROFILE", "%userprofile%"
+	case "plan9":
+		env, enverr = "home", "$home"
+	}
+	if v := Getenv(env); v != "" {
+		return v, nil
+	}
+	// On some geese the home directory is not always defined.
+	switch runtime.GOOS {
+	case "android":
+		return "/sdcard", nil
+	case "darwin":
+		if runtime.GOARCH == "arm64" {
+			return "/", nil
+		}
+	}
+	return "", errors.New(enverr + " is not defined")
+}
+
 // Chmod changes the mode of the named file to mode.
 // If the file is a symbolic link, it changes the mode of the link's target.
 // If there is an error, it will be of type *PathError.
@@ -325,11 +523,11 @@ func TempDir() string {
 // On Unix, the mode's permission bits, ModeSetuid, ModeSetgid, and
 // ModeSticky are used.
 //
-// On Windows, the mode must be non-zero but otherwise only the 0200
-// bit (owner writable) of mode is used; it controls whether the
-// file's read-only attribute is set or cleared. attribute. The other
-// bits are currently unused. Use mode 0400 for a read-only file and
-// 0600 for a readable+writable file.
+// On Windows, only the 0200 bit (owner writable) of mode is used; it
+// controls whether the file's read-only attribute is set or cleared.
+// The other bits are currently unused. For compatibility with Go 1.12
+// and earlier, use a non-zero mode. Use mode 0400 for a read-only
+// file and 0600 for a readable+writable file.
 //
 // On Plan 9, the mode's permission bits, ModeAppend, ModeExclusive,
 // and ModeTemporary are used.
@@ -352,10 +550,12 @@ func (f *File) Chmod(mode FileMode) error { return f.chmod(mode) }
 // After a deadline has been exceeded, the connection can be refreshed
 // by setting a deadline in the future.
 //
-// An error returned after a timeout fails will implement the
-// Timeout method, and calling the Timeout method will return true.
-// The PathError and SyscallError types implement the Timeout method.
-// In general, call IsTimeout to test whether an error indicates a timeout.
+// If the deadline is exceeded a call to Read or Write or to other I/O
+// methods will return an error that wraps ErrDeadlineExceeded.
+// This can be tested using errors.Is(err, os.ErrDeadlineExceeded).
+// That error implements the Timeout method, and calling the Timeout
+// method will return true, but there are other possible errors for which
+// the Timeout will return true even if the deadline has not been exceeded.
 //
 // An idle timeout can be implemented by repeatedly extending
 // the deadline after successful Read or Write calls.
@@ -381,4 +581,49 @@ func (f *File) SetReadDeadline(t time.Time) error {
 // Not all files support setting deadlines; see SetDeadline.
 func (f *File) SetWriteDeadline(t time.Time) error {
 	return f.setWriteDeadline(t)
+}
+
+// SyscallConn returns a raw file.
+// This implements the syscall.Conn interface.
+func (f *File) SyscallConn() (syscall.RawConn, error) {
+	if err := f.checkValid("SyscallConn"); err != nil {
+		return nil, err
+	}
+	return newRawConn(f)
+}
+
+// isWindowsNulName reports whether name is os.DevNull ('NUL') on Windows.
+// True is returned if name is 'NUL' whatever the case.
+func isWindowsNulName(name string) bool {
+	if len(name) != 3 {
+		return false
+	}
+	if name[0] != 'n' && name[0] != 'N' {
+		return false
+	}
+	if name[1] != 'u' && name[1] != 'U' {
+		return false
+	}
+	if name[2] != 'l' && name[2] != 'L' {
+		return false
+	}
+	return true
+}
+
+// DirFS returns a file system (an fs.FS) for the tree of files rooted at the directory dir.
+func DirFS(dir string) fs.FS {
+	return dirFS(dir)
+}
+
+type dirFS string
+
+func (dir dirFS) Open(name string) (fs.File, error) {
+	if !fs.ValidPath(name) {
+		return nil, &PathError{Op: "open", Path: name, Err: ErrInvalid}
+	}
+	f, err := Open(string(dir) + "/" + name)
+	if err != nil {
+		return nil, err // nil fs.File
+	}
+	return f, nil
 }

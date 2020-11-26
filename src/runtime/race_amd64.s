@@ -23,7 +23,7 @@
 // Arguments are passed in CX, DX, R8, R9, the rest is on stack.
 // Callee-saved registers are: BX, BP, DI, SI, R12-R15.
 // SP must be 16-byte aligned. Windows also requires "stack-backing" for the 4 register arguments:
-// http://msdn.microsoft.com/en-us/library/ms235286.aspx
+// https://msdn.microsoft.com/en-us/library/ms235286.aspx
 // We do not do this, because it seems to be intended for vararg/unprototyped functions.
 // Gcc-compiled race runtime does not try to use that space.
 
@@ -41,7 +41,9 @@
 
 // func runtime·raceread(addr uintptr)
 // Called from instrumented code.
-TEXT	runtime·raceread(SB), NOSPLIT, $0-8
+// Defined as ABIInternal so as to avoid introducing a wrapper,
+// which would render runtime.getcallerpc ineffective.
+TEXT	runtime·raceread<ABIInternal>(SB), NOSPLIT, $0-8
 	MOVQ	addr+0(FP), RARG1
 	MOVQ	(SP), RARG2
 	// void __tsan_read(ThreadState *thr, void *addr, void *pc);
@@ -65,7 +67,9 @@ TEXT	runtime·racereadpc(SB), NOSPLIT, $0-24
 
 // func runtime·racewrite(addr uintptr)
 // Called from instrumented code.
-TEXT	runtime·racewrite(SB), NOSPLIT, $0-8
+// Defined as ABIInternal so as to avoid introducing a wrapper,
+// which would render runtime.getcallerpc ineffective.
+TEXT	runtime·racewrite<ABIInternal>(SB), NOSPLIT, $0-8
 	MOVQ	addr+0(FP), RARG1
 	MOVQ	(SP), RARG2
 	// void __tsan_write(ThreadState *thr, void *addr, void *pc);
@@ -114,7 +118,9 @@ TEXT	runtime·racereadrangepc1(SB), NOSPLIT, $0-24
 
 // func runtime·racewriterange(addr, size uintptr)
 // Called from instrumented code.
-TEXT	runtime·racewriterange(SB), NOSPLIT, $0-16
+// Defined as ABIInternal so as to avoid introducing a wrapper,
+// which would render runtime.getcallerpc ineffective.
+TEXT	runtime·racewriterange<ABIInternal>(SB), NOSPLIT, $0-16
 	MOVQ	addr+0(FP), RARG1
 	MOVQ	size+8(FP), RARG2
 	MOVQ	(SP), RARG3
@@ -201,110 +207,136 @@ TEXT	runtime·racefuncexit(SB), NOSPLIT, $0-0
 // Atomic operations for sync/atomic package.
 
 // Load
-TEXT	sync∕atomic·LoadInt32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·LoadInt32(SB), NOSPLIT, $0-12
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic32_load(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·LoadInt64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·LoadInt64(SB), NOSPLIT, $0-16
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic64_load(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·LoadUint32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·LoadUint32(SB), NOSPLIT, $0-12
+	GO_ARGS
 	JMP	sync∕atomic·LoadInt32(SB)
 
-TEXT	sync∕atomic·LoadUint64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·LoadUint64(SB), NOSPLIT, $0-16
+	GO_ARGS
 	JMP	sync∕atomic·LoadInt64(SB)
 
-TEXT	sync∕atomic·LoadUintptr(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·LoadUintptr(SB), NOSPLIT, $0-16
+	GO_ARGS
 	JMP	sync∕atomic·LoadInt64(SB)
 
-TEXT	sync∕atomic·LoadPointer(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·LoadPointer(SB), NOSPLIT, $0-16
+	GO_ARGS
 	JMP	sync∕atomic·LoadInt64(SB)
 
 // Store
-TEXT	sync∕atomic·StoreInt32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·StoreInt32(SB), NOSPLIT, $0-12
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic32_store(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·StoreInt64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·StoreInt64(SB), NOSPLIT, $0-16
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic64_store(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·StoreUint32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·StoreUint32(SB), NOSPLIT, $0-12
+	GO_ARGS
 	JMP	sync∕atomic·StoreInt32(SB)
 
-TEXT	sync∕atomic·StoreUint64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·StoreUint64(SB), NOSPLIT, $0-16
+	GO_ARGS
 	JMP	sync∕atomic·StoreInt64(SB)
 
-TEXT	sync∕atomic·StoreUintptr(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·StoreUintptr(SB), NOSPLIT, $0-16
+	GO_ARGS
 	JMP	sync∕atomic·StoreInt64(SB)
 
 // Swap
-TEXT	sync∕atomic·SwapInt32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·SwapInt32(SB), NOSPLIT, $0-20
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic32_exchange(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·SwapInt64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·SwapInt64(SB), NOSPLIT, $0-24
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic64_exchange(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·SwapUint32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·SwapUint32(SB), NOSPLIT, $0-20
+	GO_ARGS
 	JMP	sync∕atomic·SwapInt32(SB)
 
-TEXT	sync∕atomic·SwapUint64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·SwapUint64(SB), NOSPLIT, $0-24
+	GO_ARGS
 	JMP	sync∕atomic·SwapInt64(SB)
 
-TEXT	sync∕atomic·SwapUintptr(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·SwapUintptr(SB), NOSPLIT, $0-24
+	GO_ARGS
 	JMP	sync∕atomic·SwapInt64(SB)
 
 // Add
-TEXT	sync∕atomic·AddInt32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·AddInt32(SB), NOSPLIT, $0-20
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic32_fetch_add(SB), AX
 	CALL	racecallatomic<>(SB)
 	MOVL	add+8(FP), AX	// convert fetch_add to add_fetch
 	ADDL	AX, ret+16(FP)
 	RET
 
-TEXT	sync∕atomic·AddInt64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·AddInt64(SB), NOSPLIT, $0-24
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic64_fetch_add(SB), AX
 	CALL	racecallatomic<>(SB)
 	MOVQ	add+8(FP), AX	// convert fetch_add to add_fetch
 	ADDQ	AX, ret+16(FP)
 	RET
 
-TEXT	sync∕atomic·AddUint32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·AddUint32(SB), NOSPLIT, $0-20
+	GO_ARGS
 	JMP	sync∕atomic·AddInt32(SB)
 
-TEXT	sync∕atomic·AddUint64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·AddUint64(SB), NOSPLIT, $0-24
+	GO_ARGS
 	JMP	sync∕atomic·AddInt64(SB)
 
-TEXT	sync∕atomic·AddUintptr(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·AddUintptr(SB), NOSPLIT, $0-24
+	GO_ARGS
 	JMP	sync∕atomic·AddInt64(SB)
 
 // CompareAndSwap
-TEXT	sync∕atomic·CompareAndSwapInt32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·CompareAndSwapInt32(SB), NOSPLIT, $0-17
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic32_compare_exchange(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·CompareAndSwapInt64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·CompareAndSwapInt64(SB), NOSPLIT, $0-25
+	GO_ARGS
 	MOVQ	$__tsan_go_atomic64_compare_exchange(SB), AX
 	CALL	racecallatomic<>(SB)
 	RET
 
-TEXT	sync∕atomic·CompareAndSwapUint32(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·CompareAndSwapUint32(SB), NOSPLIT, $0-17
+	GO_ARGS
 	JMP	sync∕atomic·CompareAndSwapInt32(SB)
 
-TEXT	sync∕atomic·CompareAndSwapUint64(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·CompareAndSwapUint64(SB), NOSPLIT, $0-25
+	GO_ARGS
 	JMP	sync∕atomic·CompareAndSwapInt64(SB)
 
-TEXT	sync∕atomic·CompareAndSwapUintptr(SB), NOSPLIT, $0-0
+TEXT	sync∕atomic·CompareAndSwapUintptr(SB), NOSPLIT, $0-25
+	GO_ARGS
 	JMP	sync∕atomic·CompareAndSwapInt64(SB)
 
 // Generic atomic operation implementation.
@@ -398,7 +430,7 @@ TEXT	runtime·racecallbackthunk(SB), NOSPLIT, $56-8
 	MOVQ	g(RARG0), RARG0
 	MOVQ	g_m(RARG0), RARG0
 	MOVQ	m_p(RARG0), RARG0
-	MOVQ	p_racectx(RARG0), RARG0
+	MOVQ	p_raceprocctx(RARG0), RARG0
 	MOVQ	RARG0, (RARG1)
 	RET
 
@@ -416,9 +448,11 @@ rest:
 	// Set g = g0.
 	get_tls(R12)
 	MOVQ	g(R12), R13
-	MOVQ	g_m(R13), R13
-	MOVQ	m_g0(R13), R14
-	MOVQ	R14, g(R12)	// g = m->g0
+	MOVQ	g_m(R13), R14
+	MOVQ	m_g0(R14), R15
+	CMPQ	R13, R15
+	JEQ	noswitch	// branch if already on g0
+	MOVQ	R15, g(R12)	// g = m->g0
 	PUSHQ	RARG1	// func arg
 	PUSHQ	RARG0	// func arg
 	CALL	runtime·racecallback(SB)
@@ -430,6 +464,7 @@ rest:
 	MOVQ	g_m(R13), R13
 	MOVQ	m_curg(R13), R14
 	MOVQ	R14, g(R12)	// g = m->curg
+ret:
 	// Restore callee-saved registers.
 	POPQ	R15
 	POPQ	R14
@@ -440,3 +475,12 @@ rest:
 	POPQ	BP
 	POPQ	BX
 	RET
+
+noswitch:
+	// already on g0
+	PUSHQ	RARG1	// func arg
+	PUSHQ	RARG0	// func arg
+	CALL	runtime·racecallback(SB)
+	POPQ	R12
+	POPQ	R12
+	JMP	ret

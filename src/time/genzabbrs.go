@@ -17,6 +17,7 @@ import (
 	"encoding/xml"
 	"flag"
 	"go/format"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -52,7 +53,7 @@ type zone struct {
 	DSTime   string
 }
 
-const wzURL = "http://unicode.org/cldr/data/common/supplemental/windowsZones.xml"
+const wzURL = "https://raw.githubusercontent.com/unicode-org/cldr/master/common/supplemental/windowsZones.xml"
 
 type MapZone struct {
 	Other     string `xml:"other,attr"`
@@ -71,7 +72,7 @@ func readWindowsZones() ([]*zone, error) {
 	}
 	defer r.Body.Close()
 
-	data, err := ioutil.ReadAll(r.Body)
+	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
 	}

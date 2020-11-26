@@ -257,6 +257,7 @@ To use the <code>net/http</code> package, it must be imported:
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
 	<b>"net/http"</b>
 )
 </pre>
@@ -267,6 +268,12 @@ view a wiki page. It will handle URLs prefixed with "/view/".
 </p>
 
 {{code "doc/articles/wiki/part2.go" `/^func viewHandler/` `/^}/`}}
+
+<p>
+Again, note the use of <code>_</code> to ignore the <code>error</code>
+return value from <code>loadPage</code>. This is done here for simplicity
+and generally considered bad practice. We will attend to this later.
+</p>
 
 <p>
 First, this function extracts the page title from <code>r.URL.Path</code>,
@@ -280,12 +287,6 @@ which is not part of the page's title.
 <p>
 The function then loads the page data, formats the page with a string of simple
 HTML, and writes it to <code>w</code>, the <code>http.ResponseWriter</code>.
-</p>
-
-<p>
-Again, note the use of <code>_</code> to ignore the <code>error</code>
-return value from <code>loadPage</code>. This is done here for simplicity
-and generally considered bad practice. We will attend to this later.
 </p>
 
 <p>
@@ -581,7 +582,7 @@ this, we can write a function to validate the title with a regular expression.
 
 <p>
 First, add <code>"regexp"</code> to the <code>import</code> list.
-Then we can create a global variable to store our validation 
+Then we can create a global variable to store our validation
 expression:
 </p>
 
@@ -674,7 +675,7 @@ The closure returned by <code>makeHandler</code> is a function that takes
 an <code>http.ResponseWriter</code> and <code>http.Request</code> (in other
 words, an <code>http.HandlerFunc</code>).
 The closure extracts the <code>title</code> from the request path, and
-validates it with the <code>TitleValidator</code> regexp. If the
+validates it with the <code>validPath</code> regexp. If the
 <code>title</code> is invalid, an error will be written to the
 <code>ResponseWriter</code> using the <code>http.NotFound</code> function.
 If the <code>title</code> is valid, the enclosed handler function

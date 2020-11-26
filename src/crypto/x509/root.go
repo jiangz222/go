@@ -4,6 +4,8 @@
 
 package x509
 
+//go:generate go run root_ios_gen.go -version 55161.140.3
+
 import "sync"
 
 var (
@@ -19,4 +21,7 @@ func systemRootsPool() *CertPool {
 
 func initSystemRoots() {
 	systemRoots, systemRootsErr = loadSystemRoots()
+	if systemRootsErr != nil {
+		systemRoots = nil
+	}
 }

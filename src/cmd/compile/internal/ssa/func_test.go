@@ -38,6 +38,7 @@ package ssa
 
 import (
 	"cmd/compile/internal/types"
+	"cmd/internal/obj"
 	"cmd/internal/src"
 	"fmt"
 	"reflect"
@@ -140,6 +141,12 @@ var emptyPass pass = pass{
 	name: "empty pass",
 }
 
+// AuxCallLSym returns an AuxCall initialized with an LSym that should pass "check"
+// as the Aux of a static call.
+func AuxCallLSym(name string) *AuxCall {
+	return &AuxCall{Fn: &obj.LSym{}}
+}
+
 // Fun takes the name of an entry bloc and a series of Bloc calls, and
 // returns a fun containing the composed Func. entry must be a name
 // supplied to one of the Bloc functions. Each of the bloc names and
@@ -152,6 +159,7 @@ func (c *Conf) Fun(entry string, blocs ...bloc) fun {
 	// But not both.
 	f.Cache = new(Cache)
 	f.pass = &emptyPass
+	f.cachedLineStarts = newXposmap(map[int]lineRange{0: {0, 100}, 1: {0, 100}, 2: {0, 100}, 3: {0, 100}, 4: {0, 100}})
 
 	blocks := make(map[string]*Block)
 	values := make(map[string]*Value)
@@ -437,12 +445,12 @@ func TestConstCache(t *testing.T) {
 		Bloc("entry",
 			Valu("mem", OpInitMem, types.TypeMem, 0, nil),
 			Exit("mem")))
-	v1 := f.f.ConstBool(src.NoXPos, c.config.Types.Bool, false)
-	v2 := f.f.ConstBool(src.NoXPos, c.config.Types.Bool, true)
+	v1 := f.f.ConstBool(c.config.Types.Bool, false)
+	v2 := f.f.ConstBool(c.config.Types.Bool, true)
 	f.f.freeValue(v1)
 	f.f.freeValue(v2)
-	v3 := f.f.ConstBool(src.NoXPos, c.config.Types.Bool, false)
-	v4 := f.f.ConstBool(src.NoXPos, c.config.Types.Bool, true)
+	v3 := f.f.ConstBool(c.config.Types.Bool, false)
+	v4 := f.f.ConstBool(c.config.Types.Bool, true)
 	if v3.AuxInt != 0 {
 		t.Errorf("expected %s to have auxint of 0\n", v3.LongString())
 	}

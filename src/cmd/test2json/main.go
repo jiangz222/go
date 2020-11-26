@@ -48,6 +48,7 @@
 //	bench  - the benchmark printed log output but did not fail
 //	fail   - the test or benchmark failed
 //	output - the test printed output
+//	skip   - the test was skipped or the package contained no tests
 //
 // The Package field, if present, specifies the package being tested.
 // When the go command runs parallel tests in -json mode, events from
@@ -117,12 +118,16 @@ func main() {
 		w := &countWriter{0, c}
 		cmd.Stdout = w
 		cmd.Stderr = w
-		if err := cmd.Run(); err != nil {
+		err := cmd.Run()
+		if err != nil {
 			if w.n > 0 {
 				// Assume command printed why it failed.
 			} else {
 				fmt.Fprintf(c, "test2json: %v\n", err)
 			}
+		}
+		c.Exited(err)
+		if err != nil {
 			c.Close()
 			os.Exit(1)
 		}

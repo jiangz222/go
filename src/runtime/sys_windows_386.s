@@ -76,7 +76,7 @@ TEXT runtime·setlasterror(SB),NOSPLIT,$0
 // exception record and context pointers.
 // Handler function is stored in AX.
 // Return 0 for 'not handled', -1 for handled.
-TEXT runtime·sigtramp(SB),NOSPLIT,$0-0
+TEXT sigtramp<>(SB),NOSPLIT,$0-0
 	MOVL	ptrs+0(FP), CX
 	SUBL	$40, SP
 
@@ -155,7 +155,7 @@ done:
 
 TEXT runtime·exceptiontramp(SB),NOSPLIT,$0
 	MOVL	$runtime·exceptionhandler(SB), AX
-	JMP	runtime·sigtramp(SB)
+	JMP	sigtramp<>(SB)
 
 TEXT runtime·firstcontinuetramp(SB),NOSPLIT,$0-0
 	// is never called
@@ -163,17 +163,21 @@ TEXT runtime·firstcontinuetramp(SB),NOSPLIT,$0-0
 
 TEXT runtime·lastcontinuetramp(SB),NOSPLIT,$0-0
 	MOVL	$runtime·lastcontinuehandler(SB), AX
-	JMP	runtime·sigtramp(SB)
+	JMP	sigtramp<>(SB)
 
+// Called by OS using stdcall ABI: bool ctrlhandler(uint32).
 TEXT runtime·ctrlhandler(SB),NOSPLIT,$0
 	PUSHL	$runtime·ctrlhandler1(SB)
+	NOP	SP	// tell vet SP changed - stop checking offsets
 	CALL	runtime·externalthreadhandler(SB)
 	MOVL	4(SP), CX
 	ADDL	$12, SP
 	JMP	CX
 
+// Called by OS using stdcall ABI: uint32 profileloop(void*).
 TEXT runtime·profileloop(SB),NOSPLIT,$0
 	PUSHL	$runtime·profileloop1(SB)
+	NOP	SP	// tell vet SP changed - stop checking offsets
 	CALL	runtime·externalthreadhandler(SB)
 	MOVL	4(SP), CX
 	ADDL	$12, SP
@@ -232,10 +236,10 @@ TEXT runtime·externalthreadhandler(SB),NOSPLIT,$0
 
 GLOBL runtime·cbctxts(SB), NOPTR, $4
 
-TEXT runtime·callbackasm1+0(SB),NOSPLIT,$0
+TEXT runtime·callbackasm1(SB),NOSPLIT,$0
   	MOVL	0(SP), AX	// will use to find our callback context
 
-	// remove return address from stack, we are not returning there
+	// remove return address from stack, we are not returning to callbackasm, but to its caller.
 	ADDL	$4, SP
 
 	// address to callback parameters into CX
@@ -247,50 +251,35 @@ TEXT runtime·callbackasm1+0(SB),NOSPLIT,$0
 	PUSHL	BP
 	PUSHL	BX
 
-	// determine index into runtime·cbctxts table
+	// Go ABI requires DF flag to be cleared.
+	CLD
+
+	// determine index into runtime·cbs table
 	SUBL	$runtime·callbackasm(SB), AX
 	MOVL	$0, DX
 	MOVL	$5, BX	// divide by 5 because each call instruction in runtime·callbacks is 5 bytes long
 	DIVL	BX
+	SUBL	$1, AX	// subtract 1 because return PC is to the next slot
 
-	// find correspondent runtime·cbctxts table entry
-	MOVL	runtime·cbctxts(SB), BX
-	MOVL	-4(BX)(AX*4), BX
+	// Create a struct callbackArgs on our stack.
+	SUBL	$(12+callbackArgs__size), SP
+	MOVL	AX, (12+callbackArgs_index)(SP)		// callback index
+	MOVL	CX, (12+callbackArgs_args)(SP)		// address of args vector
+	MOVL	$0, (12+callbackArgs_result)(SP)	// result
+	LEAL	12(SP), AX	// AX = &callbackArgs{...}
 
-	// extract callback context
-	MOVL	wincallbackcontext_gobody(BX), AX
-	MOVL	wincallbackcontext_argsize(BX), DX
+	// Call cgocallback, which will call callbackWrap(frame).
+	MOVL	$0, 8(SP)	// context
+	MOVL	AX, 4(SP)	// frame (address of callbackArgs)
+	LEAL	·callbackWrap(SB), AX
+	MOVL	AX, 0(SP)	// PC of function to call
+	CALL	runtime·cgocallback(SB)
 
-	// preserve whatever's at the memory location that
-	// the callback will use to store the return value
-	PUSHL	0(CX)(DX*1)
-
-	// extend argsize by size of return value
-	ADDL	$4, DX
-
-	// remember how to restore stack on return
-	MOVL	wincallbackcontext_restorestack(BX), BX
-	PUSHL	BX
-
-	// call target Go function
-	PUSHL	DX			// argsize (including return value)
-	PUSHL	CX			// callback parameters
-	PUSHL	AX			// address of target Go function
-	CLD
-	CALL	runtime·cgocallback_gofunc(SB)
-	POPL	AX
-	POPL	CX
-	POPL	DX
-
-	// how to restore stack on return
-	POPL	BX
-
-	// return value into AX (as per Windows spec)
-	// and restore previously preserved value
-	MOVL	-4(CX)(DX*1), AX
-	POPL	-4(CX)(DX*1)
-
-	MOVL	BX, CX			// cannot use BX anymore
+	// Get callback result.
+	MOVL	(12+callbackArgs_result)(SP), AX
+	// Get popRet.
+	MOVL	(12+callbackArgs_retPop)(SP), CX	// Can't use a callee-save register
+	ADDL	$(12+callbackArgs__size), SP
 
 	// restore registers as required for windows callback
 	POPL	BX
@@ -308,14 +297,14 @@ TEXT runtime·callbackasm1+0(SB),NOSPLIT,$0
 	RET
 
 // void tstart(M *newm);
-TEXT runtime·tstart(SB),NOSPLIT,$0
+TEXT tstart<>(SB),NOSPLIT,$0
 	MOVL	newm+0(FP), CX		// m
 	MOVL	m_g0(CX), DX		// g
 
 	// Layout new m scheduler stack on os stack.
 	MOVL	SP, AX
 	MOVL	AX, (g_stack+stack_hi)(DX)
-	SUBL	$(64*1024), AX		// stack size
+	SUBL	$(64*1024), AX		// initial stack size (adjusted later)
 	MOVL	AX, (g_stack+stack_lo)(DX)
 	ADDL	$const__StackGuard, AX
 	MOVL	AX, g_stackguard0(DX)
@@ -340,7 +329,7 @@ TEXT runtime·tstart_stdcall(SB),NOSPLIT,$0
 	MOVL	newm+0(FP), BX
 
 	PUSHL	BX
-	CALL	runtime·tstart(SB)
+	CALL	tstart<>(SB)
 	POPL	BX
 
 	// Adjust stack for stdcall to return properly.
@@ -354,7 +343,7 @@ TEXT runtime·tstart_stdcall(SB),NOSPLIT,$0
 
 // setldt(int entry, int address, int limit)
 TEXT runtime·setldt(SB),NOSPLIT,$0
-	MOVL	address+4(FP), CX
+	MOVL	base+4(FP), CX
 	MOVL	CX, 0x14(FS)
 	RET
 
@@ -383,7 +372,7 @@ TEXT runtime·onosstack(SB),NOSPLIT,$0
 	MOVL	SI, m_libcallg(BP)
 	// sp must be the last, because once async cpu profiler finds
 	// all three values to be non-zero, it will use them
-	LEAL	usec+0(FP), SI
+	LEAL	fn+0(FP), SI
 	MOVL	SI, m_libcallsp(BP)
 
 	MOVL	m_g0(BP), SI
@@ -424,6 +413,51 @@ TEXT runtime·usleep2(SB),NOSPLIT,$20
 	MOVL	BP, SP
 	RET
 
+// Runs on OS stack. duration (in 100ns units) is in BX.
+TEXT runtime·usleep2HighRes(SB),NOSPLIT,$36
+	get_tls(CX)
+	CMPL	CX, $0
+	JE	gisnotset
+
+	// Want negative 100ns units.
+	NEGL	BX
+	MOVL	$-1, hi-4(SP)
+	MOVL	BX, lo-8(SP)
+
+	MOVL	g(CX), CX
+	MOVL	g_m(CX), CX
+	MOVL	(m_mOS+mOS_highResTimer)(CX), CX
+	MOVL	CX, saved_timer-12(SP)
+
+	MOVL	$0, fResume-16(SP)
+	MOVL	$0, lpArgToCompletionRoutine-20(SP)
+	MOVL	$0, pfnCompletionRoutine-24(SP)
+	MOVL	$0, lPeriod-28(SP)
+	LEAL	lo-8(SP), BX
+	MOVL	BX, lpDueTime-32(SP)
+	MOVL	CX, hTimer-36(SP)
+	MOVL	SP, BP
+	MOVL	runtime·_SetWaitableTimer(SB), AX
+	CALL	AX
+	MOVL	BP, SP
+
+	MOVL	$0, ptime-28(SP)
+	MOVL	$0, alertable-32(SP)
+	MOVL	saved_timer-12(SP), CX
+	MOVL	CX, handle-36(SP)
+	MOVL	SP, BP
+	MOVL	runtime·_NtWaitForSingleObject(SB), AX
+	CALL	AX
+	MOVL	BP, SP
+
+	RET
+
+gisnotset:
+	// TLS is not configured. Call usleep2 instead.
+	MOVL	$runtime·usleep2(SB), AX
+	CALL	AX
+	RET
+
 // Runs on OS stack.
 TEXT runtime·switchtothread(SB),NOSPLIT,$0
 	MOVL	SP, BP
@@ -432,7 +466,7 @@ TEXT runtime·switchtothread(SB),NOSPLIT,$0
 	MOVL	BP, SP
 	RET
 
-// See http://www.dcl.hpi.uni-potsdam.de/research/WRK/2007/08/getting-os-information-the-kuser_shared_data-structure/
+// See https://www.dcl.hpi.uni-potsdam.de/research/WRK/2007/08/getting-os-information-the-kuser_shared_data-structure/
 // Must read hi1, then lo, then hi2. The snapshot is valid if hi1 == hi2.
 #define _INTERRUPT_TIME 0x7ffe0008
 #define _SYSTEM_TIME 0x7ffe0014
@@ -440,7 +474,7 @@ TEXT runtime·switchtothread(SB),NOSPLIT,$0
 #define time_hi1 4
 #define time_hi2 8
 
-TEXT runtime·nanotime(SB),NOSPLIT,$0-8
+TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 	CMPB	runtime·useQPCTime(SB), $0
 	JNE	useQPC
 loop:
@@ -455,9 +489,7 @@ loop:
 	MULL	CX
 	IMULL	$100, DI
 	ADDL	DI, DX
-	// wintime*100 = DX:AX, subtract startNano and return
-	SUBL	runtime·startNano+0(SB), AX
-	SBBL	runtime·startNano+4(SB), DX
+	// wintime*100 = DX:AX
 	MOVL	AX, ret_lo+0(FP)
 	MOVL	DX, ret_hi+4(FP)
 	RET
@@ -482,9 +514,6 @@ loop:
 	IMULL	$100, DI
 	ADDL	DI, DX
 	// w*100 = DX:AX
-	// subtract startNano and save for return
-	SUBL	runtime·startNano+0(SB), AX
-	SBBL	runtime·startNano+4(SB), DX
 	MOVL	AX, mono+12(FP)
 	MOVL	DX, mono+16(FP)
 
@@ -494,13 +523,13 @@ wall:
 	MOVL	(_SYSTEM_TIME+time_hi2), DX
 	CMPL	CX, DX
 	JNE	wall
-	
+
 	// w = DX:AX
 	// convert to Unix epoch (but still 100ns units)
 	#define delta 116444736000000000
 	SUBL	$(delta & 0xFFFFFFFF), AX
 	SBBL $(delta >> 32), DX
-	
+
 	// nano/100 = DX:AX
 	// split into two decimal halves by div 1e9.
 	// (decimal point is two spots over from correct place,
@@ -509,7 +538,7 @@ wall:
 	DIVL	CX
 	MOVL	AX, DI
 	MOVL	DX, SI
-	
+
 	// DI = nano/100/1e9 = nano/1e11 = sec/100, DX = SI = nano/100%1e9
 	// split DX into seconds and nanoseconds by div 1e7 magic multiply.
 	MOVL	DX, AX
@@ -520,7 +549,7 @@ wall:
 	IMULL	$10000000, DX
 	MOVL	SI, CX
 	SUBL	DX, CX
-	
+
 	// DI = sec/100 (still)
 	// BX = (nano/100%1e9)/1e7 = (nano/1e9)%100 = sec%100
 	// CX = (nano/100%1e9)%1e7 = (nano%1e9)/100 = nsec/100
